@@ -1,0 +1,42 @@
+{
+  "name": "pi-hindsight-memory",
+  "version": "0.1.0",
+  "description": "Long-term Hindsight memory for Pi",
+  "type": "module",
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "keywords": [
+    "pi-package"
+  ],
+  "files": [
+    "src",
+    "README.md"
+  ],
+  "pi": {
+    "extensions": [
+      "./src/index.ts"
+    ]
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "typebox": "*"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-coding-agent": "1.4.0",
+    "typebox": "^1.0.0",
+    "@biomejs/biome": "^2.6.6",
+    "@types/node": "^22.19.0",
+    "typescript": "^5.9.3",
+    "vitest": "^3.2.4"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "lint": "biome check .",
+    "test": "vitest run",
+    "test:unit": "vitest run test/unit",
+    "check": "npm run typecheck && npm run lint && npm test",
+    "e2e": "bash e2e/run-e2e.sh",
+    "e2e:check": "for file in e2e/*.mjs e2e/lib/*.mjs; do node --check \"$file\" || exit; done && bash -n e2e/run-e2e.sh && docker compose -f e2e/docker-compose.yml config -q && node --test e2e/lib/"
+  }
+}
