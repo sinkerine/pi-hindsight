@@ -37,7 +37,10 @@ export async function runJourney({ tempDir, evidenceDir }) {
   async function pi(label, sessionArgs, prompt) {
     const started = performance.now();
     try {
-      const { stdout, stderr } = await exec(piBin, [...common, ...sessionArgs, prompt], { cwd, env, timeout: 30000, maxBuffer: 4 * 1024 * 1024 });
+      const execution = exec(piBin, [...common, ...sessionArgs, prompt], { cwd, env, timeout: 30000, maxBuffer: 4 * 1024 * 1024 });
+      // Pi waits for piped stdin to end before processing the prompt argument.
+      execution.child.stdin.end();
+      const { stdout, stderr } = await execution;
       const ms = performance.now() - started;
       await Promise.all([writeFile(join(evidenceDir, `${label}.stdout`), stdout), writeFile(join(evidenceDir, `${label}.stderr`), stderr), writeFile(join(evidenceDir, `${label}.timing.json`), JSON.stringify({ ms }))]);
       assert.doesNotMatch(stderr, /(?:failed to load extension|extension error|\n\s+at .*:\d+:\d+)/i);
