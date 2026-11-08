@@ -37,6 +37,6 @@
     "test:unit": "vitest run test/unit",
     "check": "npm run typecheck && npm run lint && npm test",
     "e2e": "bash e2e/run-e2e.sh",
-    "e2e:check": "for file in e2e/*.mjs e2e/lib/*.mjs; do node --check \"$file\" || exit; done && bash -n e2e/run-e2e.sh && docker compose -f e2e/docker-compose.yml config -q && node --test e2e/lib/"
+    "e2e:check": "for file in e2e/*.mjs e2e/lib/*.mjs; do node --check \"$file\" || exit; done && bash -n e2e/run-e2e.sh && docker compose -f e2e/docker-compose.yml config -q && node --test e2e/lib/*.test.mjs"
   }
 }
