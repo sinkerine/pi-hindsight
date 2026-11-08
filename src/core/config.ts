@@ -1,4 +1,5 @@
 import { join } from "node:path";
+import { isCron } from "./digest.js";
 export type RecallPolicy = "smart" | "always" | "first" | "off";
 export type RecallBudget = "low" | "mid" | "high";
 export interface RecallConfig {
@@ -10,6 +11,10 @@ export interface RecallConfig {
   maxAutoRecallsPerSession: number;
   topicShiftThreshold: number;
   display: boolean;
+  /** Let observations supersede the raw facts they were consolidated from. */
+  preferObservations: boolean;
+  /** Word-similarity at or above which two recalled memories count as duplicates. */
+  dedupThreshold: number;
   types?: Array<"world" | "experience" | "observation">;
 }
 export interface RetainConfig {
@@ -20,6 +25,17 @@ export interface RetainConfig {
   shutdownFlushMs: number;
   segmentChars: number;
   extraTags: string[];
+  /** Invalidate older explicit facts that a newly retained fact restates. */
+  supersede: boolean;
+  supersedeThreshold: number;
+  supersedeMinRelevance: number;
+}
+export interface DigestConfig {
+  enabled: boolean;
+  maxTokens: number;
+  timeoutMs: number;
+  refreshCron: string;
+  fullRefreshCron: string;
 }
 export interface HindsightMemoryConfig {
   enabled: boolean;
@@ -30,6 +46,7 @@ export interface HindsightMemoryConfig {
   tools: boolean;
   recall: RecallConfig;
   retain: RetainConfig;
+  digest: DigestConfig;
 }
 export const DEFAULT_CONFIG: HindsightMemoryConfig = {
   enabled: true,
@@ -45,6 +62,8 @@ export const DEFAULT_CONFIG: HindsightMemoryConfig = {
     maxAutoRecallsPerSession: 20,
     topicShiftThreshold: 0.15,
     display: true,
+    preferObservations: true,
+    dedupThreshold: 0.8,
   },
   retain: {
     auto: true,
@@ -54,6 +73,16 @@ export const DEFAULT_CONFIG: HindsightMemoryConfig = {
     shutdownFlushMs: 3000,
     segmentChars: 60000,
     extraTags: [],
+    supersede: true,
+    supersedeThreshold: 0.6,
+    supersedeMinRelevance: 0.5,
+  },
+  digest: {
+    enabled: true,
+    maxTokens: 1500,
+    timeoutMs: 2500,
+    refreshCron: "0 3 * * *",
+    fullRefreshCron: "0 3 * * 0",
   },
 };
 export interface LoadConfigInput {
@@ -132,13 +161,16 @@ export function loadConfig(input: LoadConfigInput): LoadedConfig {
         valid =
           valid &&
           Number.isFinite(item) &&
-          (key === "topicShiftThreshold"
+          (key === "topicShiftThreshold" || key === "supersedeMinRelevance"
             ? item >= 0 && item <= 1
-            : Number.isSafeInteger(item) &&
-              item >=
-                (key === "minPromptChars" || key === "maxAutoRecallsPerSession"
-                  ? 0
-                  : 1));
+            : key === "dedupThreshold" || key === "supersedeThreshold"
+              ? item > 0 && item <= 1
+              : Number.isSafeInteger(item) &&
+                item >=
+                  (key === "minPromptChars" ||
+                  key === "maxAutoRecallsPerSession"
+                    ? 0
+                    : 1));
       if (key === "policy")
         valid = ["smart", "always", "first", "off"].includes(String(item));
       if (key === "budget")
@@ -152,6 +184,10 @@ export function loadConfig(input: LoadConfigInput): LoadedConfig {
           valid = false;
         }
       }
+      if (target === (config.digest as unknown) && key === "maxTokens")
+        valid = valid && (item as number) >= 256 && (item as number) <= 8192;
+      if (key === "refreshCron" || key === "fullRefreshCron")
+        valid = typeof item === "string" && isCron(item);
       if (key === "bankId")
         valid = typeof item === "string" && item.trim().length > 0;
       if (Array.isArray(old) || key === "types")
@@ -178,6 +214,9 @@ export function loadConfig(input: LoadConfigInput): LoadedConfig {
   const project = read(join(input.cwd, ".pi", "hindsight-memory.json"));
   if (project.enabled === false) config.enabled = false;
   if (object(project.retain).auto === false) config.retain.auto = false;
+  if (object(project.retain).supersede === false)
+    config.retain.supersede = false;
+  if (object(project.digest).enabled === false) config.digest.enabled = false;
   const policy = object(project.recall).policy;
   if (
     policy === "off" ||

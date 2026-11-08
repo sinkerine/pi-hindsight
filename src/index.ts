@@ -9,9 +9,16 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { CircuitBreaker } from "./core/breaker.js";
-import { HindsightClient, HindsightError } from "./core/client.js";
-import { loadConfig } from "./core/config.js";
 import {
+  HindsightClient,
+  HindsightError,
+  type MentalModel,
+} from "./core/client.js";
+import { loadConfig } from "./core/config.js";
+import { collapseDuplicates, restatedFacts } from "./core/dedup.js";
+import { digestSpec } from "./core/digest.js";
+import {
+  formatDigestBlock,
   formatHitsForTool,
   formatRecallBlock,
   RECALL_CUSTOM_TYPE,
@@ -73,6 +80,8 @@ export default function hindsightMemory(pi: ExtensionAPI): void {
     let forgetting = false;
     let lastRecall = "none";
     let lastRetain = "none";
+    let digest: MentalModel | undefined;
+    let digestStatus = "off";
     const notices = new Set<string>();
     let state = replay(ctx.sessionManager.getBranch());
     let forkBaseline = new Set<string>();
@@ -228,22 +237,22 @@ export default function hindsightMemory(pi: ExtensionAPI): void {
           tags: [`project:${project}`],
           tagsMatch: "any",
           types: config.recall.types,
+          preferObservations: config.recall.preferObservations,
           timeoutMs: config.recall.timeoutMs,
           signal,
         });
         breaker.recordSuccess();
-        const unique = new Map(hits.map((hit) => [hit.id, hit]));
-        const fresh = [...unique.values()].filter(
-          (hit) => !state.injectedIds.has(hit.id),
+        const unique = collapseDuplicates(
+          [...new Map(hits.map((hit) => [hit.id, hit])).values()],
+          config.recall.dedupThreshold,
         );
+        const fresh = unique.filter((hit) => !state.injectedIds.has(hit.id));
         const details: RecallDetails = {
           query: boundQuery(query),
           reason,
           bankId: config.bankId,
           project,
-          ids: (reason === "tool" ? [...unique.values()] : fresh).map(
-            (hit) => hit.id,
-          ),
+          ids: (reason === "tool" ? unique : fresh).map((hit) => hit.id),
           hitCount: hits.length,
           injectedCount: reason === "manual" ? 0 : fresh.length,
           ms: Date.now() - started,
@@ -263,7 +272,7 @@ export default function hindsightMemory(pi: ExtensionAPI): void {
         }
         lastRecall = `${reason}: ${hits.length} hit(s)`;
         status();
-        return { hits, fresh, details };
+        return { hits: unique, fresh, details };
       } catch (error) {
         if (!closed) {
           breaker.recordFailure();
@@ -274,10 +283,55 @@ export default function hindsightMemory(pi: ExtensionAPI): void {
         throw error;
       }
     };
+    // The server refreshes the digest on its own schedule; the session only reads it.
+    const digestLoad = (async () => {
+      if (!config.enabled || !config.digest.enabled) return;
+      const spec = digestSpec(project, config.digest);
+      digestStatus = "loading";
+      try {
+        digest = await client.findMentalModel(
+          spec.id,
+          spec.tags,
+          config.digest.timeoutMs,
+        );
+        if (!digest) {
+          await client.createMentalModel(spec, config.digest.timeoutMs);
+          digestStatus = "created; the server is generating it";
+        } else if (!digest.content.trim() && digest.isStale) {
+          // A digest created before any memories stays empty until its cron; bootstrap it once.
+          await client.refreshMentalModel(spec.id, config.digest.timeoutMs);
+          digestStatus = "refresh requested; the server is generating it";
+        } else
+          digestStatus = digest.content.trim()
+            ? `ready${digest.lastRefreshedAt ? ` (refreshed ${digest.lastRefreshedAt})` : ""}`
+            : "empty; awaiting a server refresh";
+      } catch {
+        digest = undefined;
+        digestStatus = "unavailable";
+      }
+    })();
+    const loadedDigest = async (): Promise<MentalModel | undefined> => {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      try {
+        await Promise.race([
+          digestLoad,
+          new Promise<void>((resolve) => {
+            timer = setTimeout(resolve, config.digest.timeoutMs);
+          }),
+        ]);
+      } finally {
+        if (timer) clearTimeout(timer);
+      }
+      return digest?.content.trim() ? digest : undefined;
+    };
     for (const warning of warnings) warn("config", warning);
     return {
       config,
       project,
+      loadedDigest,
+      get digest() {
+        return digest;
+      },
       breaker,
       writer,
       client,
@@ -299,7 +353,7 @@ export default function hindsightMemory(pi: ExtensionAPI): void {
         status();
       },
       describe: () =>
-        `${new URL(config.apiUrl).origin} | bank: ${config.bankId} | project: ${project} | policy: ${config.recall.policy} | ${state.paused ? "paused" : "active"} | recall: ${lastRecall} | retain: ${lastRetain} | breaker: ${breaker.isOpen() ? "open" : "closed"}`,
+        `${new URL(config.apiUrl).origin} | bank: ${config.bankId} | project: ${project} | policy: ${config.recall.policy} | ${state.paused ? "paused" : "active"} | recall: ${lastRecall} | retain: ${lastRetain} | digest: ${digestStatus} | breaker: ${breaker.isOpen() ? "open" : "closed"}`,
       async forget() {
         forgetting = true;
         state.paused = true;
@@ -340,7 +394,7 @@ export default function hindsightMemory(pi: ExtensionAPI): void {
       render: (width) => [
         theme.fg(
           "muted",
-          `Hindsight: ${message.details?.injectedCount ?? 0} memories`.slice(
+          `Hindsight: ${message.details?.injectedCount ?? 0} memories${message.details?.digest ? " + project digest" : ""}`.slice(
             0,
             Math.max(0, width),
           ),
@@ -380,25 +434,61 @@ export default function hindsightMemory(pi: ExtensionAPI): void {
       lastRecallQuery: r.state.lastRecallQuery,
       compactedSinceLastRecall: r.state.compactedSinceLastRecall,
     });
-    if (!decision.recall) return;
-    try {
-      const { fresh, details } = await r.recall(
-        decision.query,
-        decision.reason,
-      );
-      if (fresh.length)
-        return {
-          message: {
-            customType: RECALL_CUSTOM_TYPE,
-            content: formatRecallBlock(fresh),
-            display: r.config.recall.display,
-            details,
-          },
-        };
-    } catch {}
+    const wantDigest =
+      r.config.enabled &&
+      r.config.digest.enabled &&
+      !r.state.paused &&
+      !r.state.digestInjected &&
+      event.messageType === "user";
+    const [recalled, digest] = await Promise.all([
+      decision.recall
+        ? r.recall(decision.query, decision.reason).catch(() => undefined)
+        : undefined,
+      wantDigest ? r.loadedDigest().catch(() => undefined) : undefined,
+    ]);
+    const fresh = recalled?.fresh ?? [];
+    if (!fresh.length && !digest) return;
+    const digestDetails = digest && {
+      id: digest.id,
+      ...(digest.lastRefreshedAt
+        ? { refreshedAt: digest.lastRefreshedAt }
+        : {}),
+    };
+    // An empty recall already persisted its own details, so it must not be replayed twice.
+    const details: RecallDetails =
+      recalled && fresh.length
+        ? {
+            ...recalled.details,
+            ...(digestDetails ? { digest: digestDetails } : {}),
+          }
+        : {
+            query: "",
+            reason: "digest",
+            bankId: r.config.bankId,
+            project: r.project,
+            ids: [],
+            hitCount: 0,
+            injectedCount: 0,
+            ms: 0,
+            ...(digestDetails ? { digest: digestDetails } : {}),
+          };
+    if (digest) r.state.digestInjected = true;
+    return {
+      message: {
+        customType: RECALL_CUSTOM_TYPE,
+        content: [
+          ...(digest ? [formatDigestBlock(digest.content)] : []),
+          ...(fresh.length ? [formatRecallBlock(fresh)] : []),
+        ].join("\n\n"),
+        display: r.config.recall.display,
+        details,
+      },
+    };
   });
   pi.on("session_compact", () => {
-    if (runtime) runtime.state.compactedSinceLastRecall = true;
+    if (!runtime) return;
+    runtime.state.compactedSinceLastRecall = true;
+    runtime.state.digestInjected = false;
   });
   pi.on("session_tree", () => runtime?.restore());
   pi.on("agent_settled", () => {
@@ -413,7 +503,8 @@ export default function hindsightMemory(pi: ExtensionAPI): void {
   });
 
   pi.registerCommand("hindsight", {
-    description: "Memory status, pause, resume, recall, checkpoint, or forget",
+    description:
+      "Memory status, pause, resume, recall, digest, checkpoint, or forget",
     handler: async (args, ctx) => {
       const r = runtime;
       if (!r) return;
@@ -427,6 +518,14 @@ export default function hindsightMemory(pi: ExtensionAPI): void {
         } else if (command === "recall" && rest.length) {
           const { hits } = await r.recall(rest.join(" "), "manual");
           if (ctx.hasUI) ctx.ui.notify(formatHitsForTool(hits), "info");
+        } else if (command === "digest") {
+          const digest = await r.loadedDigest();
+          if (ctx.hasUI)
+            ctx.ui.notify(
+              digest ? formatDigestBlock(digest.content) : r.describe(),
+              "info",
+            );
+          return;
         } else if (command === "forget") {
           if (
             ctx.hasUI &&
@@ -444,7 +543,7 @@ export default function hindsightMemory(pi: ExtensionAPI): void {
         } else if (command !== "status" && command !== "") {
           if (ctx.hasUI)
             ctx.ui.notify(
-              "Usage: /hindsight status|pause|resume|recall <query>|checkpoint|forget",
+              "Usage: /hindsight status|pause|resume|recall <query>|digest|checkpoint|forget",
               "info",
             );
           return;
@@ -548,9 +647,53 @@ export default function hindsightMemory(pi: ExtensionAPI): void {
           ],
         });
         r.breaker.recordSuccess();
+        const superseded: string[] = [];
+        if (r.config.retain.supersede) {
+          try {
+            const older = await r.client.recall({
+              query: boundQuery(content),
+              budget: "low",
+              maxTokens: r.config.recall.maxTokens,
+              tags: [`project:${project}`, "kind:explicit"],
+              tagsMatch: "all_strict",
+              types: ["world", "experience"],
+              timeoutMs: r.config.recall.timeoutMs,
+              signal,
+            });
+            for (const hit of restatedFacts(
+              content,
+              older,
+              documentId,
+              r.config.retain.supersedeThreshold,
+              r.config.retain.supersedeMinRelevance,
+            ))
+              if (
+                await r.client
+                  .invalidateMemory(
+                    hit.id,
+                    `superseded-by:${documentId}`,
+                    r.config.retain.timeoutMs,
+                    signal,
+                  )
+                  .catch(() => false)
+              )
+                superseded.push(hit.id);
+          } catch {}
+          if (superseded.length)
+            pi.appendEntry(STATE_ENTRY_TYPE, {
+              superseded: { by: documentId, ids: superseded },
+            });
+        }
         return {
-          content: [{ type: "text", text: "Memory retained." }],
-          details: { documentId },
+          content: [
+            {
+              type: "text",
+              text: superseded.length
+                ? `Memory retained; invalidated ${superseded.length} restated older fact(s).`
+                : "Memory retained.",
+            },
+          ],
+          details: { documentId, superseded },
         };
       } catch {
         r.breaker.recordFailure();

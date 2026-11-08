@@ -116,3 +116,47 @@ it("rejects numeric values for nonnumeric fields and prototype keys", () => {
   expect(result.config).toEqual(DEFAULT_CONFIG);
   expect(Object.prototype).not.toHaveProperty("polluted");
 });
+it("validates compaction, supersession and digest settings", () => {
+  const result = load({
+    "/agent/hindsight-memory.json": JSON.stringify({
+      recall: { preferObservations: false, dedupThreshold: 0.7 },
+      retain: { supersedeThreshold: 0, supersedeMinRelevance: 0.4 },
+      digest: {
+        maxTokens: 100,
+        refreshCron: "0 4 * * *",
+        fullRefreshCron: "weekly",
+        timeoutMs: 500,
+      },
+    }),
+  });
+  expect(result.config.recall).toMatchObject({
+    preferObservations: false,
+    dedupThreshold: 0.7,
+  });
+  expect(result.config.retain).toMatchObject({
+    supersedeThreshold: 0.6,
+    supersedeMinRelevance: 0.4,
+  });
+  expect(result.config.digest).toEqual({
+    ...DEFAULT_CONFIG.digest,
+    refreshCron: "0 4 * * *",
+    timeoutMs: 500,
+  });
+  expect(result.warnings).toEqual([
+    "Ignored invalid configuration field: supersedeThreshold",
+    "Ignored invalid configuration field: maxTokens",
+    "Ignored invalid configuration field: fullRefreshCron",
+  ]);
+});
+it("lets project configuration disable only digest and supersession", () => {
+  const { config } = load({
+    "/repo/.pi/hindsight-memory.json": JSON.stringify({
+      digest: { enabled: false, maxTokens: 8000 },
+      retain: { supersede: false },
+      recall: { preferObservations: false },
+    }),
+  });
+  expect(config.digest).toEqual({ ...DEFAULT_CONFIG.digest, enabled: false });
+  expect(config.retain.supersede).toBe(false);
+  expect(config.recall.preferObservations).toBe(true);
+});

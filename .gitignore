@@ -1,3 +1,5 @@
 node_modules/
 coverage/
 *.tgz
+# Local sandbox LLM credentials and endpoints; never commit.
+e2e/llm.env

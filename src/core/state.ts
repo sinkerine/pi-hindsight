@@ -5,6 +5,8 @@ export interface BranchMemoryState {
   autoRecalls: number;
   lastRecallQuery?: string;
   compactedSinceLastRecall: boolean;
+  /** Whether the active branch carries the project digest since the last compaction. */
+  digestInjected: boolean;
   paused: boolean;
 }
 export function reconstructState(
@@ -14,10 +16,14 @@ export function reconstructState(
     injectedIds: new Set(),
     autoRecalls: 0,
     compactedSinceLastRecall: false,
+    digestInjected: false,
     paused: false,
   };
   for (const entry of branch) {
-    if (entry.type === "compaction") state.compactedSinceLastRecall = true;
+    if (entry.type === "compaction") {
+      state.compactedSinceLastRecall = true;
+      state.digestInjected = false;
+    }
     if (
       entry.type === "custom" &&
       entry.customType === STATE_ENTRY_TYPE &&
@@ -37,7 +43,13 @@ export function reconstructState(
       if (Array.isArray(details.ids))
         for (const id of details.ids)
           if (typeof id === "string") state.injectedIds.add(id);
-      if (details.reason !== "tool" && details.reason !== "manual") {
+      if (details.digest && typeof details.digest === "object")
+        state.digestInjected = true;
+      if (
+        details.reason !== "tool" &&
+        details.reason !== "manual" &&
+        details.reason !== "digest"
+      ) {
         state.autoRecalls++;
         if (typeof details.query === "string")
           state.lastRecallQuery = details.query;

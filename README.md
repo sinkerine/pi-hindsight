@@ -66,7 +66,9 @@ The complete defaults are:
     "minPromptChars": 12,
     "maxAutoRecallsPerSession": 20,
     "topicShiftThreshold": 0.15,
-    "display": true
+    "display": true,
+    "preferObservations": true,
+    "dedupThreshold": 0.8
   },
   "retain": {
     "auto": true,
@@ -75,12 +77,22 @@ The complete defaults are:
     "timeoutMs": 5000,
     "shutdownFlushMs": 3000,
     "segmentChars": 60000,
-    "extraTags": []
+    "extraTags": [],
+    "supersede": true,
+    "supersedeThreshold": 0.6,
+    "supersedeMinRelevance": 0.5
+  },
+  "digest": {
+    "enabled": true,
+    "maxTokens": 1500,
+    "timeoutMs": 2500,
+    "refreshCron": "0 3 * * *",
+    "fullRefreshCron": "0 3 * * 0"
   }
 }
 ```
 
-Optional global fields are `apiToken`, `project` (override project naming), and `recall.types` (an array containing `world`, `experience`, and/or `observation`). `budget` accepts `low`, `mid`, or `high`. Durations and size limits must be positive safe integers; `minPromptChars` and `maxAutoRecallsPerSession` also accept zero. `topicShiftThreshold` must be between zero and one.
+Optional global fields are `apiToken`, `project` (override project naming), and `recall.types` (an array containing `world`, `experience`, and/or `observation`). `budget` accepts `low`, `mid`, or `high`. Durations and size limits must be positive safe integers; `minPromptChars` and `maxAutoRecallsPerSession` also accept zero. `topicShiftThreshold` and `supersedeMinRelevance` must be between zero and one; `dedupThreshold` and `supersedeThreshold` must be greater than zero and at most one. `digest.maxTokens` must be between 256 and 8,192, and cron fields must be five-field UTC expressions.
 
 The project file `<cwd>/.pi/hindsight-memory.json` may only restrict behavior:
 
@@ -88,11 +100,12 @@ The project file `<cwd>/.pi/hindsight-memory.json` may only restrict behavior:
 {
   "enabled": false,
   "recall": { "policy": "off" },
-  "retain": { "auto": false }
+  "retain": { "auto": false, "supersede": false },
+  "digest": { "enabled": false }
 }
 ```
 
-Allowed restrictions are `enabled:false`, `retain.auto:false`, and `recall.policy:"off"` or `"first"`. Project files cannot enable globally disabled behavior, change credentials, redirect traffic, select a bank, alter tags, or change any other option. A project `first` never overrides a global `off`. Other project fields are ignored. This restriction applies independently of Pi's own project trust mechanism.
+Allowed restrictions are `enabled:false`, `retain.auto:false`, `retain.supersede:false`, `digest.enabled:false`, and `recall.policy:"off"` or `"first"`. Project files cannot enable globally disabled behavior, change credentials, redirect traffic, select a bank, alter tags, or change any other option. A project `first` never overrides a global `off`. Other project fields are ignored. This restriction applies independently of Pi's own project trust mechanism.
 
 Projects share the default bank `pi`. Retrieval uses `project:<name>` with `tags_match:"any"`, so it includes matching project memories and untagged global memories. Retention tags are `harness:pi`, `project:<name>`, `session:<id>`, plus `retain.extraTags`; observation scopes contain only `project:<name>` so observations consolidate across sessions. Project names derive from the repository's Git common directory, making worktrees share a name, and fall back to the working directory basename. Tags provide retrieval scope; use separate banks and server access controls when a hard privacy boundary is required.
 
@@ -104,7 +117,21 @@ Projects share the default bank `pi`. Retrieval uses `project:<name>` with `tags
 
 Queries are bounded to approximately 500 tokens using a Unicode byte-cost estimate. Recall is retrieval only: no extra model calls for gating, relevance judging or query rewriting. Hits already injected on the active branch are removed; an empty or duplicate-only response adds no message. Recalled content is enclosed in an escaped `<hindsight_memory>` block labeled as untrusted reference data.
 
+Recall sends `prefer_observations` (`recall.preferObservations`), so consolidated observations replace the raw facts they were built from and the server backfills the freed slots. The extension then collapses remaining near-duplicates: two hits whose content-word Jaccard similarity reaches `dedupThreshold`, or whose shorter text (at least six content words) is 90% contained in the other, count as one. The kept hit is the observation, then the more complete text, then the newer mention, in the earlier rank position.
+
 Pi wiring stores one `hindsight-memory.recall` custom message immediately after the user prompt. Persisting the message preserves an auditable, cache-friendly prefix instead of rewriting the system prompt. The model still pays for retrieved input tokens, typically once at full price and then through cache reads. Heuristics can miss relevant history or retrieve irrelevant hits; tools remain useful for explicit historical questions.
+
+## Forgetting and compaction
+
+Compaction runs on the Hindsight server. Consolidation merges related facts into observations, reconciles near-duplicates and rewrites a belief when newer facts contradict it, keeping the earlier wording in its history. Bank-wide `observations_mission` and `retain_mission` settings belong to the server operator; this extension never changes bank configuration.
+
+**Project digest.** Each project gets one server-side mental model, `pi-digest-<project>-<hash>`, tagged `project:<name>` with `tags_match:"all_strict"`. It answers a fixed question about durable decisions, conventions, preferences, constraints and pitfalls. The server refreshes it in `delta` mode on `refreshCron` (default daily at 03:00 UTC), skips the refresh when nothing in scope changed, and regenerates it fully on `fullRefreshCron` (default Sundays). Each refresh that does work is one server-side LLM reflect run. At session start the extension reads the digest; if it does not exist the extension creates it. A digest that is still empty while the server reports newer in-scope memories gets one refresh request per session; otherwise it would wait for the next cron. Changing `maxTokens` or cron settings later does not update an existing digest.
+
+The digest is injected in an escaped `<hindsight_project_digest>` block, as untrusted reference data, at the first prompt of a branch and again after compaction. It shares the custom message with any recall from the same prompt; a digest-only message uses reason `digest` and does not count against the automatic recall budget. Before the first prompt, the extension waits at most `digest.timeoutMs` for the read. A paused branch receives no digest. The digest summarizes current memories only: if source memories are deleted, the next refresh drops their content.
+
+**Restated explicit facts.** After `hindsight_retain` stores a fact, it recalls existing raw facts from other `pi:fact:` documents of the project (`tags_match:"all_strict"` with `kind:explicit`). Facts whose content-word similarity to the new text reaches `supersedeThreshold`, and whose cross-encoder relevance is at least `supersedeMinRelevance` when the server reports one, are invalidated with reason `superseded-by:<new document>`. Invalidation is reversible on the server, excluded from recall and consolidation, and kept for audit; it also prunes observations built from that fact so consolidation rebuilds them. Invalidated ids are recorded in a branch state entry. Failures leave the older facts in place. Contradictions without restated wording are left to consolidation.
+
+Hindsight 1.1.0 has no memory expiry. Nothing is deleted automatically; storage grows with retained sessions. `/hindsight forget` remains the only deletion and removes this session's conversation documents.
 
 ## Retention behavior and privacy
 
@@ -124,16 +151,17 @@ Recall times out after 2.5 seconds by default; retain requests after 5 seconds. 
 
 The Pi wiring supplies these controls:
 
-| Control                     | Behavior                                                                 |
-| --------------------------- | ------------------------------------------------------------------------ |
-| `/hindsight status`         | Show server URL, bank, project, policy, recent results and breaker state |
-| `/hindsight pause`          | Persist a branch-local pause for automatic recall and retention          |
-| `/hindsight resume`         | Persist a branch-local resume                                            |
-| `/hindsight recall <query>` | Display a manual preview without injecting it into model context         |
-| `/hindsight checkpoint`     | Request a checkpoint                                                     |
-| `/hindsight forget`         | Confirm deletion of this session's conversation documents                |
-| `hindsight_recall` tool     | Model-directed retrieval with `query` and optional `max_tokens`          |
-| `hindsight_retain` tool     | Retain a redacted durable fact with `content` and optional `context`     |
+| Control                     | Behavior                                                                                               |
+| --------------------------- | ------------------------------------------------------------------------------------------------------ |
+| `/hindsight status`         | Show server URL, bank, project, policy, recent results, digest and breaker state                       |
+| `/hindsight pause`          | Persist a branch-local pause for automatic recall and retention                                        |
+| `/hindsight resume`         | Persist a branch-local resume                                                                          |
+| `/hindsight recall <query>` | Display a manual preview without injecting it into model context                                       |
+| `/hindsight digest`         | Display the project digest, or its status when it has no content                                       |
+| `/hindsight checkpoint`     | Request a checkpoint                                                                                   |
+| `/hindsight forget`         | Confirm deletion of this session's conversation documents                                              |
+| `hindsight_recall` tool     | Model-directed retrieval with `query` and optional `max_tokens`                                        |
+| `hindsight_retain` tool     | Retain a redacted durable fact with `content` and optional `context`; invalidates restated older facts |
 
 Explicit facts use separate deterministic `pi:fact:<hash>` documents tagged `kind:explicit`. Forgetting a session's conversation documents does not delete these separate facts or other sessions' memories. Pause follows the active branch; navigating the tree reconstructs state from entries on that branch. Set `tools:false` globally to disable model-directed tools. Use explicit retention for decisions, conventions and preferences, rather than transient task state.
 
@@ -152,4 +180,4 @@ npm pack --dry-run
 
 `check` runs typechecking, Biome and all unit/integration tests. Runtime TypeScript is shipped directly; tests and the sandbox are excluded from the package. The future extension load smoke is `pi --offline --no-session -ne -e ./src/index.ts --help`.
 
-`npm run e2e:check` checks each sandbox JavaScript file independently, shell syntax, Compose configuration and assertion helper tests. `npm run e2e` runs the full disposable sandbox journey after T3 supplies `e2e/`: Hindsight on `127.0.0.1:18890` with no-LLM chunk extraction and a local model stub on `127.0.0.1:18891`. It must never touch an existing Hindsight service on `:18889`. The sandbox is separate from normal installation and uses no external LLM calls.
+`npm run e2e:check` checks each sandbox JavaScript file independently, shell syntax, Compose configuration and assertion helper tests. `npm run e2e` runs the full disposable sandbox journey after T3 supplies `e2e/`: Hindsight on `127.0.0.1:18890` with chunk extraction and a local model stub on `127.0.0.1:18891` for Pi. It must never touch an existing Hindsight service on `:18889`. Without `e2e/llm.env` the sandbox Hindsight has no LLM and the journey checks only digest creation; with that gitignored file it generates and checks the project digest. See [e2e/README.md](e2e/README.md).

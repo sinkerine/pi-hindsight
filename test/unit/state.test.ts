@@ -37,6 +37,7 @@ it("reconstructs branch ids, pause state, query and compaction state in order", 
     lastRecallQuery: "next",
     paused: true,
     compactedSinceLastRecall: false,
+    digestInjected: false,
   });
   expect(
     reconstructState([
@@ -68,6 +69,7 @@ it("manual/tool ids dedupe without using the automatic recall budget or compacti
     autoRecalls: 0,
     paused: false,
     compactedSinceLastRecall: true,
+    digestInjected: false,
   });
 });
 it("ignores malformed and unrelated stored details", () => {
@@ -94,8 +96,24 @@ it("ignores malformed and unrelated stored details", () => {
     autoRecalls: 0,
     paused: false,
     compactedSinceLastRecall: false,
+    digestInjected: false,
   });
   expect(
     reconstructState([recall({ ids: ["valid", 123], query: 3 })]).injectedIds,
   ).toEqual(new Set(["valid"]));
+});
+
+it("tracks the project digest until a later compaction without counting auto recalls", () => {
+  const digest = { id: "pi-digest-demo-1234abcd" };
+  expect(
+    reconstructState([
+      recall({ ids: [], query: "", reason: "digest", digest }),
+    ]),
+  ).toMatchObject({ digestInjected: true, autoRecalls: 0 });
+  expect(
+    reconstructState([
+      recall({ ids: ["a"], query: "q", reason: "first-prompt", digest }),
+      compact,
+    ]),
+  ).toMatchObject({ digestInjected: false, autoRecalls: 1 });
 });

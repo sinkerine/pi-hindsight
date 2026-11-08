@@ -6,7 +6,8 @@ export type RecallReason =
   | "topic-shift"
   | "always"
   | "manual"
-  | "tool";
+  | "tool"
+  | "digest";
 export type SkipReason =
   | "disabled"
   | "paused"

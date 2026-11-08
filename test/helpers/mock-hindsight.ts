@@ -11,7 +11,10 @@ export async function mockHindsight() {
   let retainStatus = 200;
   let hangRecall = false;
   let hangRetain = false;
-  let hits = [{ id: "memory-1", text: "Deploy with make ship. ZEBRA-42." }];
+  let hits: Record<string, unknown>[] = [
+    { id: "memory-1", text: "Deploy with make ship. ZEBRA-42." },
+  ];
+  const models = new Map<string, Record<string, unknown>>();
   const waiting = new Set<ServerResponse>();
   const server = createServer(async (req, res) => {
     let content = "";
@@ -20,7 +23,20 @@ export async function mockHindsight() {
     const path = req.url ?? "/";
     requests.push({ method: req.method ?? "GET", path, body });
     res.setHeader("Content-Type", "application/json");
-    if (path.endsWith("/recall")) {
+    const pathname = path.split("?")[0] ?? path;
+    if (pathname.endsWith("/mental-models") && req.method === "GET") {
+      res.end(JSON.stringify({ items: [...models.values()] }));
+    } else if (pathname.endsWith("/refresh") && req.method === "POST") {
+      res.end('{"status":"queued"}');
+    } else if (path.endsWith("/mental-models") && req.method === "POST") {
+      if (models.has(String(body.id))) res.writeHead(409).end("{}");
+      else {
+        models.set(String(body.id), { id: body.id, content: "" });
+        res.end(JSON.stringify({ mental_model_id: body.id }));
+      }
+    } else if (req.method === "PATCH") {
+      res.end("null");
+    } else if (path.endsWith("/recall")) {
       if (hangRecall) {
         waiting.add(res);
         return;
@@ -51,6 +67,22 @@ export async function mockHindsight() {
         (r) => r.method === "POST" && r.path.endsWith("/memories"),
       ),
     deletes: () => requests.filter((r) => r.method === "DELETE"),
+    patches: () => requests.filter((r) => r.method === "PATCH"),
+    modelRequests: () =>
+      requests.filter((r) => r.path.includes("/mental-models")),
+    model(
+      id: string,
+      content: string,
+      refreshedAt = "2026-11-08T03:00:00Z",
+      isStale = false,
+    ) {
+      models.set(id, {
+        id,
+        content,
+        last_refreshed_at: refreshedAt,
+        is_stale: isStale,
+      });
+    },
     hits(value: typeof hits) {
       hits = value;
     },

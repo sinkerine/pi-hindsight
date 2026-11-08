@@ -214,3 +214,121 @@ it("omits auth when not configured and makes no fetch in constructor", async () 
     "Authorization",
   );
 });
+it("maps scores and observation sources and sends observation preference", async () => {
+  const { client, fetcher } = setup(async () =>
+    Response.json({
+      results: [
+        {
+          id: "o",
+          text: "Observation",
+          type: "observation",
+          scores: { final: 0.7, reranker: 0.9, semantic: 0.4 },
+          source_fact_ids: ["a", "b"],
+        },
+        { id: "r", text: "Raw", scores: null, source_fact_ids: [1] },
+      ],
+    }),
+  );
+  const hits = await client.recall({ ...params, preferObservations: true });
+  expect(hits[0]).toMatchObject({
+    scores: { final: 0.7, reranker: 0.9 },
+    sourceFactIds: ["a", "b"],
+  });
+  expect(hits[1]).not.toHaveProperty("scores");
+  expect(hits[1]).not.toHaveProperty("sourceFactIds");
+  expect(JSON.parse(String(fetcher.mock.calls[0]?.[1]?.body))).toMatchObject({
+    prefer_observations: true,
+  });
+});
+it("invalidates memories with a reason and reports absent ones", async () => {
+  const { client, fetcher } = setup(async () => Response.json(null));
+  expect(await client.invalidateMemory("m/1", "superseded", 100)).toBe(true);
+  const [url, init] = fetcher.mock.calls[0] ?? [];
+  expect(url).toBe(
+    "http://localhost:8888/v1/default/banks/bank%2Fone/memories/m%2F1",
+  );
+  expect(init?.method).toBe("PATCH");
+  expect(JSON.parse(String(init?.body))).toEqual({
+    state: "invalidated",
+    reason: "superseded",
+  });
+  const missing = setup(async () => new Response("{}", { status: 404 }));
+  expect(await missing.client.invalidateMemory("m", "r", 100)).toBe(false);
+});
+it("reads mental models through the tag-filtered list; 409 means it exists", async () => {
+  const { client, fetcher } = setup(async () =>
+    Response.json({
+      items: [
+        { id: "other", content: "Other" },
+        {
+          id: "pi-digest-x",
+          content: "Digest",
+          last_refreshed_at: "2026-11-08T03:00:00Z",
+          is_stale: false,
+        },
+      ],
+    }),
+  );
+  expect(
+    await client.findMentalModel("pi-digest-x", ["project:x"], 100),
+  ).toEqual({
+    id: "pi-digest-x",
+    content: "Digest",
+    lastRefreshedAt: "2026-11-08T03:00:00Z",
+    isStale: false,
+  });
+  expect(fetcher.mock.calls[0]?.[0]).toBe(
+    "http://localhost:8888/v1/default/banks/bank%2Fone/mental-models?detail=content&tags_match=exact&limit=100&tags=project%3Ax",
+  );
+  expect(await client.findMentalModel("missing", [], 100)).toBeUndefined();
+  const malformed = setup(async () => Response.json({ items: "bad" }));
+  await expect(
+    malformed.client.findMentalModel("pi-digest-x", [], 100),
+  ).rejects.toMatchObject({ kind: "parse" });
+  const absent = setup(async () => new Response("{}", { status: 404 }));
+  expect(
+    await absent.client.findMentalModel("pi-digest-x", [], 100),
+  ).toBeUndefined();
+  const refresh = setup(async () => Response.json({ status: "queued" }));
+  await refresh.client.refreshMentalModel("pi-digest-x", 100);
+  expect(refresh.fetcher.mock.calls[0]?.[0]).toBe(
+    "http://localhost:8888/v1/default/banks/bank%2Fone/mental-models/pi-digest-x/refresh",
+  );
+  expect(refresh.fetcher.mock.calls[0]?.[1]?.method).toBe("POST");
+  const spec = {
+    id: "pi-digest-x",
+    name: "Digest",
+    sourceQuery: "What matters?",
+    tags: ["project:x"],
+    maxTokens: 1500,
+    trigger: {
+      mode: "delta" as const,
+      refreshCron: "0 3 * * *",
+      fullRefreshCron: "0 3 * * 0",
+      tagsMatch: "all_strict" as const,
+    },
+  };
+  const created = setup(async () => Response.json({ mental_model_id: "x" }));
+  await created.client.createMentalModel(spec, 100);
+  expect(JSON.parse(String(created.fetcher.mock.calls[0]?.[1]?.body))).toEqual({
+    id: "pi-digest-x",
+    name: "Digest",
+    source_query: "What matters?",
+    tags: ["project:x"],
+    max_tokens: 1500,
+    trigger: {
+      mode: "delta",
+      refresh_cron: "0 3 * * *",
+      full_refresh_cron: "0 3 * * 0",
+      tags_match: "all_strict",
+    },
+  });
+  const conflict = setup(async () => new Response("{}", { status: 409 }));
+  await expect(
+    conflict.client.createMentalModel(spec, 100),
+  ).resolves.toBeUndefined();
+  const failed = setup(async () => new Response("{}", { status: 500 }));
+  await expect(
+    failed.client.createMentalModel(spec, 100),
+  ).rejects.toMatchObject({ kind: "http", status: 500 });
+});

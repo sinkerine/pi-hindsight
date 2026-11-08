@@ -10,8 +10,17 @@ export function recalls(entries) {
   return entries.filter((entry) => entry.type === "custom_message" && entry.customType === "hindsight-memory.recall");
 }
 
+/** Injections carrying recalled memories, excluding digest-only messages. */
+export function memoryRecalls(entries) {
+  return recalls(entries).filter((entry) => entry.details?.reason !== "digest");
+}
+
+export function digestInjections(entries) {
+  return recalls(entries).filter((entry) => entry.details?.digest);
+}
+
 export function assertFirstRecall(entries) {
-  const hits = recalls(entries);
+  const hits = memoryRecalls(entries);
   assert.equal(hits.length, 1, "Expected exactly one recall injection");
   assert.equal(hits[0].details?.reason, "first-prompt");
   const index = entries.indexOf(hits[0]);

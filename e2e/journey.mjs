@@ -4,7 +4,7 @@ import { readFile, writeFile, mkdir, readdir } from "node:fs/promises";
 import { resolve, join, dirname } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { promisify } from "node:util";
-import { assertCompletedOperations, assertDocument, assertFirstRecall, parseSession, poll, recalls } from "./lib/assertions.mjs";
+import { assertCompletedOperations, assertDocument, assertFirstRecall, digestInjections, memoryRecalls, parseSession, poll, recalls } from "./lib/assertions.mjs";
 
 const exec = promisify(execFile);
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -16,7 +16,7 @@ async function json(path, remainingMs = 2000) {
   return response.json();
 }
 
-export async function runJourney({ tempDir, evidenceDir }) {
+export async function runJourney({ tempDir, evidenceDir, llm = process.env.E2E_LLM === "1" }) {
   assert.ok(tempDir && evidenceDir, "Expected temp and evidence directories");
   const bank = `e2e-${crypto.randomUUID()}`;
   const project = "e2e-sandbox";
@@ -27,7 +27,7 @@ export async function runJourney({ tempDir, evidenceDir }) {
   const model = { id: "stub", name: "E2E stub", reasoning: false, input: ["text"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 128000, maxTokens: 8192 };
   await writeFile(join(agentDir, "models.json"), JSON.stringify({ providers: { e2e: { api: "openai-completions", baseUrl: "http://127.0.0.1:18891/v1", apiKey: "e2e-dummy", models: [model] } } }, null, 2));
   await writeFile(join(agentDir, "hindsight-memory.json"), JSON.stringify({ project }));
-  await writeFile(join(evidenceDir, "run.json"), JSON.stringify({ bank, project, image: "ghcr.io/vectorize-io/hindsight:1.1.0@sha256:50311d02b4d5d2b7c5242bd336edf8735df8374eaad496a92f49c83b37d2aa06" }, null, 2));
+  await writeFile(join(evidenceDir, "run.json"), JSON.stringify({ bank, project, llm, image: "ghcr.io/vectorize-io/hindsight:1.1.0@sha256:50311d02b4d5d2b7c5242bd336edf8735df8374eaad496a92f49c83b37d2aa06" }, null, 2));
   // Deliberate allowlist: host credentials, API URLs, and agent configuration cannot escape into Pi.
   const env = { PATH: process.env.PATH, HOME: tempDir, LANG: "C.UTF-8", PI_OFFLINE: "1", PI_CODING_AGENT_DIR: agentDir, HINDSIGHT_API_URL: baseUrl, HINDSIGHT_BANK_ID: bank };
   const piBin = process.env.E2E_PI_BIN || join(root, "node_modules/.bin/pi");
@@ -104,7 +104,41 @@ export async function runJourney({ tempDir, evidenceDir }) {
 
   const ok = await pi("session-b-ok", ["--session", sessionB.path], "ok");
   assert.equal(ok.stdout.trim(), "NO_MEMORY");
-  assert.equal(recalls((await session(b, "session-b-ok")).entries).length, 1, "Trivial prompt must not inject another recall");
+  const sessionBOk = await session(b, "session-b-ok");
+  assert.equal(memoryRecalls(sessionBOk.entries).length, 1, "Trivial prompt must not inject another recall");
+  assert.ok(digestInjections(sessionBOk.entries).length <= 1, "Digest must be injected at most once per branch");
+
+  // Session B's first lookup found no digest and asked the server to create one.
+  const digestModel = await poll("project digest mental model", async (remaining) => {
+    const list = await json(`${bankPath}/mental-models?detail=content`, remaining);
+    await writeFile(join(evidenceDir, "mental-models.json"), JSON.stringify(list, null, 2));
+    return list.items.find((item) => item.name === `Pi project digest: ${project}`);
+  }, { timeoutMs: 30000 });
+  assert.match(digestModel.id, /^pi-digest-e2e-sandbox-[a-f0-9]{8}$/);
+  assert.deepEqual(digestModel.tags, [`project:${project}`]);
+  assert.equal(digestModel.trigger?.mode, "delta");
+  assert.equal(digestModel.trigger?.refresh_cron, "0 3 * * *");
+  assert.equal(digestModel.trigger?.full_refresh_cron, "0 3 * * 0");
+  let digestResult = "skipped: no e2e/llm.env";
+  if (llm) {
+    const generated = await poll("generated project digest", async (remaining) => {
+      const current = await json(`${bankPath}/mental-models/${digestModel.id}?detail=content`, remaining);
+      await writeFile(join(evidenceDir, "mental-model.json"), JSON.stringify(current, null, 2));
+      return typeof current.content === "string" && current.content.trim() && current;
+    }, { timeoutMs: 180000, intervalMs: 2000 });
+    assert.match(generated.content, /ZEBRA-42|make ship/i, "Digest should capture the deploy convention");
+    const d = crypto.randomUUID();
+    await pi("session-d", ["--session-id", d], "What should I know before changing this project?");
+    const sessionD = await session(d, "session-d");
+    const [digestEntry, ...extra] = digestInjections(sessionD.entries);
+    assert.ok(digestEntry, "New session must inject the generated digest");
+    assert.equal(extra.length, 0);
+    assert.equal(digestEntry.details.digest.id, digestModel.id);
+    assert.match(digestEntry.content, /<hindsight_project_digest>/);
+    await pi("session-d-ok", ["--session", sessionD.path], "ok");
+    assert.equal(digestInjections((await session(d, "session-d-ok")).entries).length, 1, "Resume must not inject the digest again");
+    digestResult = "injected";
+  }
 
   const c = crypto.randomUUID();
   await pi("session-c", ["--session-id", c], "remember the api key is sk-test-ABCDEFGHIJKLMNOPQRSTUV");
@@ -117,7 +151,7 @@ export async function runJourney({ tempDir, evidenceDir }) {
   assert.ok(failure.ms <= ok.ms + 3500, `Failure overhead ${Math.round(failure.ms - ok.ms)}ms exceeds recall timeout + 1s`);
   assert.doesNotMatch(failure.stderr, /(?:stack trace|HindsightError|\n\s+at )/i);
   await session(b, "session-b-unavailable");
-  await writeFile(join(evidenceDir, "result.json"), JSON.stringify({ status: "passed", bank, sessionA: a, sessionB: b, sessionC: c, failureOverheadMs: failure.ms - ok.ms }, null, 2));
+  await writeFile(join(evidenceDir, "result.json"), JSON.stringify({ status: "passed", bank, sessionA: a, sessionB: b, sessionC: c, digest: digestResult, failureOverheadMs: failure.ms - ok.ms }, null, 2));
   console.log(`E2E journey passed; evidence: ${evidenceDir}`);
 }
 

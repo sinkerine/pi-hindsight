@@ -6,8 +6,14 @@ services:
     image: ghcr.io/vectorize-io/hindsight:1.1.0@sha256:50311d02b4d5d2b7c5242bd336edf8735df8374eaad496a92f49c83b37d2aa06
     ports:
       - "127.0.0.1:18890:8888"
+    # Later files override earlier ones; `environment` below overrides both.
+    env_file:
+      - path: ./sandbox-defaults.env
+        required: true
+      - path: ./llm.env
+        required: false
     environment:
-      HINDSIGHT_API_LLM_PROVIDER: none
+      # Chunk extraction keeps retained text deterministic even with an LLM configured.
       HINDSIGHT_API_RETAIN_EXTRACTION_MODE: chunks
       HINDSIGHT_ENABLE_CP: "false"
       HINDSIGHT_API_STORE_DOCUMENT_TEXT: "true"
