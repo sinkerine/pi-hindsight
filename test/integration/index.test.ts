@@ -55,6 +55,59 @@ describe("hindsightMemory extension with real HTTP", () => {
     rmSync(root, { recursive: true, force: true });
   });
 
+  it.each(["off", "recall", "full"])(
+    "enforces child mode %s for auto and manual retention",
+    async (subagents) => {
+      vi.stubEnv("PI_SUBAGENT_CHILD", "1");
+      configure({ subagents });
+      const pi = await start();
+      await pi.prompt("How do we deploy this project?");
+      await settle(pi);
+      const fact = await pi.tool("hindsight_retain", {
+        content: "Durable deployment convention",
+      });
+      expect(fact.isError === true).toBe(subagents !== "full");
+      expect(server.recalls().length > 0).toBe(subagents !== "off");
+      expect(server.retains().length > 0).toBe(subagents === "full");
+      expect(server.modelRequests()).toHaveLength(0);
+    },
+  );
+
+  it("defers automatic retention until the configured minimum, while manual checkpoints bypass it", async () => {
+    configure({ retain: { minUserTurns: 2 } });
+    const pi = await start();
+    pi.user("One meaningful user turn.");
+    await pi.emit("agent_settled");
+    expect(server.retains()).toHaveLength(0);
+    pi.user("A second meaningful user turn.");
+    await pi.emit("agent_settled");
+    await vi.waitFor(() => expect(server.retains()).toHaveLength(1));
+    const other = await start(undefined, "startup", "other");
+    other.user("Explicit checkpoint of one turn.");
+    await other.command("checkpoint");
+    expect(server.retains()).toHaveLength(2);
+  });
+
+  it("reports bank-wide async failures and retries only an explicitly named operation", async () => {
+    const pi = await start();
+    await pi.command("status");
+    expect(pi.notices.at(-1)).toContain(
+      "server failed operations (bank-wide): 16",
+    );
+    await pi.command("retry-failed invalid");
+    expect(server.requests.some((r) => r.path.endsWith("/retry"))).toBe(false);
+    await pi.command("retry-failed 093ce412-bb18-4886-a572-aead6ef41095");
+    expect(
+      server.requests.filter((r) => r.path.endsWith("/retry")),
+    ).toHaveLength(1);
+    expect(pi.notices.at(-1)).toContain("not yet complete");
+    await pi.command("pause");
+    await pi.command("retry-failed 093ce412-bb18-4886-a572-aead6ef41095");
+    expect(
+      server.requests.filter((r) => r.path.endsWith("/retry")),
+    ).toHaveLength(1);
+  });
+
   it("registers tools without network work in the factory", () => {
     const pi = fakePi(root);
     hindsightMemory(pi.api);

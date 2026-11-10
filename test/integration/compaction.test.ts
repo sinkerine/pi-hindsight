@@ -63,7 +63,7 @@ describe("automatic forget and compaction", () => {
     expect(create?.body).toMatchObject({
       id: digestId,
       tags: ["project:demo"],
-      max_tokens: 1500,
+      max_tokens: 800,
       trigger: {
         mode: "delta",
         refresh_cron: "0 3 * * *",
@@ -102,6 +102,25 @@ describe("automatic forget and compaction", () => {
     expect(latest).toHaveLength(2);
     expect(latest[1]?.details).toMatchObject({ reason: "digest", ids: [] });
     expect(latest[1]?.content).not.toContain("<hindsight_memory>");
+  });
+
+  it("updates only the project digest and requests a full regeneration explicitly", async () => {
+    server.model(digestId, "Old oversized digest");
+    const pi = await start();
+    await pi.command("digest refresh");
+    const requests = server.modelRequests();
+    expect(requests.find((r) => r.method === "PATCH")).toMatchObject({
+      path: `/v1/default/banks/test/mental-models/${digestId}`,
+      body: {
+        max_tokens: 800,
+        source_query: expect.stringContaining("compact checklist"),
+        trigger: { mode: "delta" },
+      },
+    });
+    expect(requests.find((r) => r.path.endsWith("/refresh"))).toMatchObject({
+      body: { mode: "full" },
+    });
+    expect(server.requests.some((r) => r.path.endsWith("/config"))).toBe(false);
   });
 
   it("requests one bootstrap refresh for an empty digest with newer memories", async () => {

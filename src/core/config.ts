@@ -19,6 +19,7 @@ export interface RecallConfig {
 }
 export interface RetainConfig {
   auto: boolean;
+  minUserTurns: number;
   ephemeral: boolean;
   includeToolCalls: boolean;
   timeoutMs: number;
@@ -44,6 +45,7 @@ export interface HindsightMemoryConfig {
   bankId: string;
   project?: string;
   tools: boolean;
+  subagents: "off" | "recall" | "full";
   recall: RecallConfig;
   retain: RetainConfig;
   digest: DigestConfig;
@@ -53,6 +55,7 @@ export const DEFAULT_CONFIG: HindsightMemoryConfig = {
   apiUrl: "http://localhost:8888",
   bankId: "pi",
   tools: true,
+  subagents: "off",
   recall: {
     policy: "smart",
     budget: "low",
@@ -67,6 +70,7 @@ export const DEFAULT_CONFIG: HindsightMemoryConfig = {
   },
   retain: {
     auto: true,
+    minUserTurns: 1,
     ephemeral: true,
     includeToolCalls: true,
     timeoutMs: 5000,
@@ -79,7 +83,7 @@ export const DEFAULT_CONFIG: HindsightMemoryConfig = {
   },
   digest: {
     enabled: true,
-    maxTokens: 1500,
+    maxTokens: 800,
     timeoutMs: 2500,
     refreshCron: "0 3 * * *",
     fullRefreshCron: "0 3 * * 0",
@@ -173,6 +177,8 @@ export function loadConfig(input: LoadConfigInput): LoadedConfig {
                     : 1));
       if (key === "policy")
         valid = ["smart", "always", "first", "off"].includes(String(item));
+      if (key === "subagents")
+        valid = ["off", "recall", "full"].includes(String(item));
       if (key === "budget")
         valid = ["low", "mid", "high"].includes(String(item));
       if (key === "apiUrl") {
@@ -223,5 +229,12 @@ export function loadConfig(input: LoadConfigInput): LoadedConfig {
     (policy === "first" && config.recall.policy !== "off")
   )
     config.recall.policy = policy;
+  // Apply child restrictions last: project configuration cannot re-enable them.
+  if (input.env.PI_SUBAGENT_CHILD === "1") {
+    if (config.subagents === "off") config.enabled = false;
+    if (config.subagents !== "full") config.retain.auto = false;
+    // Briefs carry context; children never need the whole project digest.
+    config.digest.enabled = false;
+  }
   return { config, sources, warnings };
 }

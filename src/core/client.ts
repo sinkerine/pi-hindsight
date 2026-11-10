@@ -281,17 +281,39 @@ export class HindsightClient {
         : {}),
     };
   }
-  /** Queues a refresh in the model's own trigger mode. */
+  /** Explicit migration of an existing project digest; never touches bank settings. */
+  async updateMentalModel(
+    spec: MentalModelSpec,
+    timeoutMs: number,
+  ): Promise<void> {
+    await this.request(
+      `${this.bankPath}/mental-models/${encodeURIComponent(spec.id)}`,
+      "PATCH",
+      timeoutMs,
+      {
+        source_query: spec.sourceQuery,
+        max_tokens: spec.maxTokens,
+        trigger: {
+          mode: spec.trigger.mode,
+          refresh_cron: spec.trigger.refreshCron,
+          full_refresh_cron: spec.trigger.fullRefreshCron,
+          tags_match: spec.trigger.tagsMatch,
+        },
+      },
+    );
+  }
+  /** Queues a refresh in the model's own trigger mode, or an explicit full regeneration. */
   async refreshMentalModel(
     id: string,
     timeoutMs: number,
     signal?: AbortSignal,
+    full = false,
   ): Promise<void> {
     await this.request(
       `${this.bankPath}/mental-models/${encodeURIComponent(id)}/refresh`,
       "POST",
       timeoutMs,
-      undefined,
+      full ? { mode: "full" } : undefined,
       signal,
     );
   }
@@ -353,6 +375,37 @@ export class HindsightClient {
     )
       throw new HindsightError("Invalid Hindsight retain response", "parse");
     return { operationId: data.operation_id };
+  }
+  /** Bank-wide diagnostic, fetched only by an explicit status command. */
+  async failedOperations(timeoutMs: number): Promise<number> {
+    const data = (await this.request(
+      `${this.bankPath}/stats`,
+      "GET",
+      timeoutMs,
+    )) as { failed_operations?: unknown } | null;
+    if (
+      !data ||
+      !Number.isSafeInteger(data.failed_operations) ||
+      (data.failed_operations as number) < 0
+    )
+      throw new HindsightError("Invalid Hindsight stats", "parse");
+    return data.failed_operations as number;
+  }
+  /** Explicit operator recovery; never retry failures automatically or replay documents. */
+  async retryOperation(id: string, timeoutMs: number): Promise<void> {
+    if (
+      !/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(
+        id,
+      )
+    )
+      throw new HindsightError("Invalid operation id", "parse");
+    const data = (await this.request(
+      `${this.bankPath}/operations/${encodeURIComponent(id)}/retry`,
+      "POST",
+      timeoutMs,
+    )) as { success?: unknown } | null;
+    if (data?.success !== true)
+      throw new HindsightError("Hindsight retry rejected", "parse");
   }
   async deleteDocument(
     documentId: string,

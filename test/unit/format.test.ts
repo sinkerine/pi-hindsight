@@ -12,7 +12,8 @@ it("fences untrusted hits and escapes delimiters in ids and text", () => {
   expect(result.endsWith("\n</hindsight_memory>")).toBe(true);
   expect(result.match(/<\/hindsight_memory>/g)).toHaveLength(1);
   expect(result).toContain("&lt;/hindsight_memory&gt;");
-  expect(result).toContain("&#96;&#96;&#96;");
+  expect(result).toContain("```");
+  expect(result).not.toContain("&#96;");
   expect(result).toContain("&amp;");
 });
 it("tools format hits or an explicit empty result", () => {

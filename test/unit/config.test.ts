@@ -11,6 +11,37 @@ const load = (
     cwd: "/repo",
     readFile: (path) => files[path],
   });
+it.each(["off", "recall", "full"] as const)(
+  "restricts child mode %s after project configuration",
+  (subagents) => {
+    const { config } = load(
+      {
+        "/agent/hindsight-memory.json": JSON.stringify({ subagents }),
+        "/repo/.pi/hindsight-memory.json": JSON.stringify({
+          enabled: true,
+          retain: { auto: true },
+          digest: { enabled: true },
+        }),
+      },
+      { PI_SUBAGENT_CHILD: "1" },
+    );
+    expect(config.enabled).toBe(subagents !== "off");
+    expect(config.retain.auto).toBe(subagents === "full");
+    expect(config.digest.enabled).toBe(false);
+  },
+);
+it("validates child mode and minimum turns without accepting project enablement", () => {
+  expect(
+    load({
+      "/agent/hindsight-memory.json":
+        '{"subagents":"bad","retain":{"minUserTurns":0}}',
+    }).config,
+  ).toEqual(DEFAULT_CONFIG);
+  expect(
+    load({ "/agent/hindsight-memory.json": '{"retain":{"minUserTurns":2}}' })
+      .config.retain.minUserTurns,
+  ).toBe(2);
+});
 it("defaults are isolated between loads", () => {
   const first = load({});
   first.config.retain.extraTags.push("changed");

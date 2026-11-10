@@ -2,7 +2,7 @@
 
 Connect Pi to an already running [Hindsight](https://github.com/vectorize-io/hindsight) server for long-term project memory. The package uses local rules to decide when retrieval may help, persists recalled memory in the conversation, and checkpoints redacted conversation documents for server-side fact extraction.
 
-**Development status:** the core library and unit tests are implemented in T1. Pi event wiring, the tools and command described below arrive in T2; the disposable sandbox arrives in T3. The package manifest already declares their entry points and scripts. Installation and runtime examples require those tasks to be complete.
+Core memory, Pi integration, tools, scheduled project digests and the disposable E2E sandbox are implemented.
 
 ## Install
 
@@ -58,6 +58,7 @@ The complete defaults are:
   "apiUrl": "http://localhost:8888",
   "bankId": "pi",
   "tools": true,
+  "subagents": "off",
   "recall": {
     "policy": "smart",
     "budget": "low",
@@ -72,6 +73,7 @@ The complete defaults are:
   },
   "retain": {
     "auto": true,
+    "minUserTurns": 1,
     "ephemeral": true,
     "includeToolCalls": true,
     "timeoutMs": 5000,
@@ -84,7 +86,7 @@ The complete defaults are:
   },
   "digest": {
     "enabled": true,
-    "maxTokens": 1500,
+    "maxTokens": 800,
     "timeoutMs": 2500,
     "refreshCron": "0 3 * * *",
     "fullRefreshCron": "0 3 * * 0"
@@ -109,9 +111,15 @@ Allowed restrictions are `enabled:false`, `retain.auto:false`, `retain.supersede
 
 Projects share the default bank `pi`. Retrieval uses `project:<name>` with `tags_match:"any"`, so it includes matching project memories and untagged global memories. Retention tags are `harness:pi`, `project:<name>`, `session:<id>`, plus `retain.extraTags`; observation scopes contain only `project:<name>` so observations consolidate across sessions. Project names derive from the repository's Git common directory, making worktrees share a name, and fall back to the working directory basename. Tags provide retrieval scope; use separate banks and server access controls when a hard privacy boundary is required.
 
+## Child sessions and retention volume
+
+When `PI_SUBAGENT_CHILD=1`, `subagents` controls memory: `"off"` (default) disables all memory traffic, `"recall"` permits automatic/manual recall but blocks automatic and explicit retention, and `"full"` permits both. Children never load or inject the project digest; the parent's brief provides context. Global disabled settings and project restrictions still apply. The child environment marker, not prompt wording, identifies children.
+
+`retain.minUserTurns` is a positive integer (default 1). Automatic settled/shutdown checkpoints wait for that many user messages on the current branch, excluding inherited fork entries. Set it to 2 to omit single-prompt sessions; this also omits potentially useful single-prompt decisions. Explicit checkpoints and durable-fact tools bypass the turn threshold, but never bypass child restrictions, disabled memory or pause.
+
 ## Recall behavior
 
-`smart` skips disabled or paused memory, an open circuit breaker, custom-triggered runs, short prompts and acknowledgements such as `ok`, `continue`, and `thanks`. It also respects the per-session automatic recall budget. Eligible prompts recall on the first query, after compaction, on explicit memory cues (`remember`, `last time`, `we decided`, `convention`, etc.), or on a topic shift. Topic shifts require at least 40 characters and Jaccard similarity of content words below `topicShiftThreshold` relative to the last recall query.
+`smart` skips disabled or paused memory, an open circuit breaker, custom-triggered runs, short prompts and acknowledgements such as `ok`, `continue`, and `thanks`. It also respects the per-session automatic recall budget. Expanded `<skill>…</skill>` instructions, Paseo transport wrappers and known recovery preambles are removed before gating, topic comparison and query bounding; the request body is preserved. Eligible prompts recall on the first query, after compaction, on explicit memory cues (`remember`, `recall`, `last time`, `we decided`, `convention`, `preference`, `as discussed`), or on a topic shift. Standalone `again`, `before`, `earlier`, `previously`, `usually` and `history` are not memory cues; a substantive request can still trigger a topic shift. Topic shifts require at least 40 characters and Jaccard similarity of content words below `topicShiftThreshold` relative to the last recall query.
 
 `always` recalls every eligible nontrivial prompt within the budget. `first` skips later topic shifts; the specified rule ordering still allows explicit cues and post-compaction recall. `off` disables automatic recall. Manual recall and the model tool complement these automatic policies.
 
@@ -123,9 +131,19 @@ Pi wiring stores one `hindsight-memory.recall` custom message immediately after 
 
 ## Forgetting and compaction
 
-Compaction runs on the Hindsight server. Consolidation merges related facts into observations, reconciles near-duplicates and rewrites a belief when newer facts contradict it, keeping the earlier wording in its history. Bank-wide `observations_mission` and `retain_mission` settings belong to the server operator; this extension never changes bank configuration.
+Compaction runs on the Hindsight server. Consolidation merges related facts into observations, reconciles near-duplicates and rewrites a belief when newer facts contradict it, keeping the earlier wording in its history. Bank-wide `observations_mission` and `retain_mission` settings belong to the server operator; this extension never changes bank configuration. For a dedicated coding-memory bank, an operator can PATCH `/v1/default/banks/<bank>/config` with:
 
-**Project digest.** Each project gets one server-side mental model, `pi-digest-<project>-<hash>`, tagged `project:<name>` with `tags_match:"all_strict"`. It answers a fixed question about durable decisions, conventions, preferences, constraints and pitfalls. The server refreshes it in `delta` mode on `refreshCron` (default daily at 03:00 UTC), skips the refresh when nothing in scope changed, and regenerates it fully on `fullRefreshCron` (default Sundays). Each refresh that does work is one server-side LLM reflect run. At session start the extension reads the digest; if it does not exist the extension creates it. A digest that is still empty while the server reports newer in-scope memories gets one refresh request per session; otherwise it would wait for the next cron. Changing `maxTokens` or cron settings later does not update an existing digest.
+```json
+{
+  "updates": {
+    "retain_mission": "Extract durable coding knowledge: current user preferences, explicit decisions and their reasons, repository conventions, architecture constraints, and reusable pitfalls with verified causes and fixes. Exclude routine task narration, worktree paths, temporary agent/run IDs, individual test pass counts, one-off command output, and unconfirmed diagnoses. Preserve uncertainty and distinguish a proposal or intermediate hypothesis from a verified final outcome. Prefer the latest explicit correction over an earlier claim. Retain exact paths or commands only when they define a recurring convention."
+  }
+}
+```
+
+Read and back up existing overrides first; adapt this guidance to the bank's purpose. This affects future extraction, not existing facts, and does not require reindexing or deleting history.
+
+**Project digest.** Each project gets one server-side mental model, `pi-digest-<project>-<hash>`, tagged `project:<name>` with `tags_match:"all_strict"`. It answers a fixed question about durable decisions, conventions, preferences, constraints and pitfalls. The server refreshes it in `delta` mode on `refreshCron` (default daily at 03:00 UTC), skips the refresh when nothing in scope changed, and regenerates it fully on `fullRefreshCron` (default Sundays). Each refresh that does work is one server-side LLM reflect run. At session start the extension reads the digest; if it does not exist the extension creates it. A digest that is still empty while the server reports newer in-scope memories gets one refresh request per session; otherwise it would wait for the next cron. Changing settings does not silently rewrite an existing digest. Run `/hindsight digest refresh` to apply the configured query, token budget and schedules to this project digest and queue a full regeneration; reload after it completes. The compact default is 800 tokens. Refresh is explicit so ordinary session starts do not each spend an LLM call.
 
 The digest is injected in an escaped `<hindsight_project_digest>` block, as untrusted reference data, at the first prompt of a branch and again after compaction. It shares the custom message with any recall from the same prompt; a digest-only message uses reason `digest` and does not count against the automatic recall budget. Before the first prompt, the extension waits at most `digest.timeoutMs` for the read. A paused branch receives no digest. The digest summarizes current memories only: if source memories are deleted, the next refresh drops their content.
 
@@ -141,7 +159,7 @@ Redaction recognizes PEM private keys, AWS access IDs, GitHub tokens, OpenAI/Ant
 
 Messages are packed into segments of at most `segmentChars` characters. Oversized individual messages are split deterministically. Appending messages preserves all earlier frozen segments. Each changed segment is retained asynchronously as `pi:<sessionId>:<segment>` with a SHA-256 content hash; unchanged acknowledged segments are skipped. Hindsight upserts the document and reuses unchanged chunks, avoiding repeated extraction of a stable prefix. Branch rewrites update affected segments and delete acknowledged higher segments that no longer exist.
 
-The writer allows one request in flight, coalesces pending snapshots to the latest, and retries transient network/timeouts, HTTP 429, and HTTP 5xx errors at most twice after 500 ms and 1,500 ms. Each segment submission uses one generated operation ID across its retries. Only successful responses acknowledge hashes. A successful HTTP submission means the server accepted asynchronous work; it does not mean extraction has completed.
+The writer allows one request in flight, coalesces pending snapshots to the latest, and retries transient network/timeouts, HTTP 429, and HTTP 5xx errors at most twice after 500 ms and 1,500 ms. Each segment submission uses one generated operation ID across its retries. Only successful responses acknowledge hashes. A successful HTTP submission means the server accepted asynchronous work; it does not mean extraction has completed. `/hindsight status` fetches the bank-wide `failed_operations` count on demand; diagnostic failures do not affect the recall circuit breaker. To recover, inspect `GET /v1/default/banks/<bank>/operations?status=failed&limit=100`, fix the provider/configuration cause, and run `/hindsight retry-failed <operation-id>` for the selected job. This uses the native retry endpoint, reports only that work was queued, and never automatically retries failures or replays documents. For retain jobs with both a batch parent and child, retry the batch parent rather than both; check its resulting status before retrying any remaining child. The count covers all producers in the bank, not just this session.
 
 Graceful shutdown checkpoints and waits at most `shutdownFlushMs` (default 3 seconds). Work still pending at that bound may be lost on exit; crashes or SIGKILL can lose the current prompt. Forks exclude inherited branch entry IDs to avoid re-retaining the parent transcript. Resumed sessions use their existing session ID. Ephemeral `--no-session` sessions still have an ID and are retained by default; set `retain.ephemeral:false` globally to exclude them.
 

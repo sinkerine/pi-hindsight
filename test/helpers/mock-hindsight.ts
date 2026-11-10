@@ -34,6 +34,10 @@ export async function mockHindsight() {
         models.set(String(body.id), { id: body.id, content: "" });
         res.end(JSON.stringify({ mental_model_id: body.id }));
       }
+    } else if (pathname.endsWith("/stats")) {
+      res.end('{"failed_operations":16}');
+    } else if (pathname.endsWith("/retry") && req.method === "POST") {
+      res.end('{"success":true}');
     } else if (req.method === "PATCH") {
       res.end("null");
     } else if (path.endsWith("/recall")) {

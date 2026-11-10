@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   boundQuery,
+  cleanRecallPrompt,
   contentWords,
   decideRecall,
   jaccard,
@@ -77,18 +78,12 @@ describe("decideRecall ordered rules", () => {
     "remember",
     "recall",
     "last time",
-    "previously",
-    "earlier",
-    "before",
     "we decided",
     "we agreed",
     "we chose",
     "why did we",
     "convention",
     "preference",
-    "usually",
-    "history",
-    "again",
     "as discussed",
   ])("recognizes cue %s", (cue) =>
     expect(
@@ -109,6 +104,41 @@ describe("decideRecall ordered rules", () => {
       }).reason,
     ).toBe("cue"));
 });
+it("cleans envelopes before gating and bounding, preserving the request body", () => {
+  const request = "How do we deploy this project?";
+  const prompt = `<skill name="x">${"Remember history before again ".repeat(100)}</skill>\n<paseo-system source-agent-id="previous"> ${request}</paseo-system>`;
+  expect(cleanRecallPrompt(prompt)).toBe(request);
+  expect(decideRecall({ ...base, prompt })).toMatchObject({ query: request });
+  expect(
+    decideRecall({
+      ...base,
+      prompt: '<skill name="x">Remember our conventions</skill>',
+    }).reason,
+  ).toBe("trivial");
+  expect(
+    cleanRecallPrompt(
+      "Task: You are reviving a previous subagent conversation. Original run: abc Original session file: /tmp/log Follow-up: Fix the deployment.",
+    ),
+  ).toBe("Follow-up: Fix the deployment.");
+  expect(
+    cleanRecallPrompt(
+      "The session was interrupted. Review current state.\n\nDeploy the service.",
+    ),
+  ).toBe("Deploy the service.");
+});
+it.each(["previously", "earlier", "before", "usually", "history", "again"])(
+  "does not treat %s as an explicit cue",
+  (word) => {
+    expect(
+      decideRecall({
+        ...base,
+        policy: "first",
+        lastRecallQuery: "old",
+        prompt: `Please explain ${word} in this project`,
+      }).reason,
+    ).toBe("first-only");
+  },
+);
 it("bounds query by Unicode byte costs without splitting characters", () => {
   expect(boundQuery("abcdef", 2)).toBe("abcd");
   expect(boundQuery("é中😀x", 9)).toBe("é中😀");

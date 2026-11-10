@@ -3,7 +3,7 @@ import type { MentalModelSpec } from "./client.js";
 import type { DigestConfig } from "./config.js";
 
 export const DIGEST_SOURCE_QUERY =
-  "What durable decisions, conventions, user preferences, architecture constraints, and known pitfalls apply to this project? Exclude transient task progress, one-off command output, and anything superseded by later decisions.";
+  "What durable decisions, conventions, user preferences, architecture constraints, and known pitfalls apply to this project? Write a compact checklist of only the most useful current facts within 800 tokens. Prefer stable rules and recurring pitfalls over package versions, commit hashes, historical incidents, and long examples. Exclude transient task progress, one-off command output, and anything superseded by later decisions.";
 
 /** Mental model ids allow lowercase alphanumerics and hyphens only. */
 export function digestIdFor(project: string): string {

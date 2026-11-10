@@ -255,6 +255,24 @@ it("invalidates memories with a reason and reports absent ones", async () => {
   const missing = setup(async () => new Response("{}", { status: 404 }));
   expect(await missing.client.invalidateMemory("m", "r", 100)).toBe(false);
 });
+it("validates server diagnostics and retry acknowledgements", async () => {
+  const { client, fetcher } = setup(async () =>
+    Response.json({ failed_operations: 16 }),
+  );
+  expect(await client.failedOperations(100)).toBe(16);
+  fetcher.mockResolvedValueOnce(Response.json({ failed_operations: -1 }));
+  await expect(client.failedOperations(100)).rejects.toMatchObject({
+    kind: "parse",
+  });
+  await expect(client.retryOperation("bad/id", 100)).rejects.toMatchObject({
+    kind: "parse",
+  });
+  expect(fetcher).toHaveBeenCalledTimes(2);
+  fetcher.mockResolvedValueOnce(Response.json({ success: false }));
+  await expect(
+    client.retryOperation("093ce412-bb18-4886-a572-aead6ef41095", 100),
+  ).rejects.toMatchObject({ kind: "parse" });
+});
 it("reads mental models through the tag-filtered list; 409 means it exists", async () => {
   const { client, fetcher } = setup(async () =>
     Response.json({

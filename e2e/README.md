@@ -23,6 +23,7 @@ The journey checks these steps:
 5. Resume session B with `ok`. Check there is no new recall and the stub returns `NO_MEMORY`. The stub considers messages since the last assistant response so a persisted injection from an earlier turn cannot satisfy this check.
 6. Session C submits a synthetic API key. Inspect retained text for `[REDACTED:` and absence of the key.
 6a. After session B, check that the extension created the project digest mental model with its tags and delta/cron trigger. With `e2e/llm.env`, wait up to 180 seconds for generated content mentioning the deploy convention, start new session D and check that exactly one injection carries the digest, then resume D with `ok` and check that the digest is not injected again. Without `e2e/llm.env`, `result.json` records the generation step as skipped.
+6b. Launch a child with `PI_SUBAGENT_CHILD=1` and default settings; require no memory reply, no persisted recall and no retained child document. Launch a parent with a large expanded skill and Paseo envelope; require the persisted search query to contain only the actual deployment question. Check that new digests use the 800-token budget.
 7. Stop only the sandbox Hindsight service. Resume B with a memory cue. Require a successful normal reply, no stack trace, and elapsed overhead <= 2500 ms + 1 second over the healthy resumed `ok` request.
 8. Always capture logs, copy session/config artifacts, stop the stub, run `docker compose down -v`, and remove temporary runtime files.
 

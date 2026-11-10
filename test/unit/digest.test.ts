@@ -14,7 +14,7 @@ it("builds a project-scoped delta digest with server-side schedules", () => {
   expect(digestSpec("demo", DEFAULT_CONFIG.digest)).toMatchObject({
     name: "Pi project digest: demo",
     tags: ["project:demo"],
-    maxTokens: 1500,
+    maxTokens: 800,
     trigger: {
       mode: "delta",
       refreshCron: "0 3 * * *",

@@ -66,6 +66,20 @@ export function jaccard(
   const union = new Set([...a, ...b]);
   return union.size ? [...a].filter((x) => b.has(x)).length / union.size : 1;
 }
+/** Remove expanded instructions and transport metadata before gating or bounding. */
+export function cleanRecallPrompt(text: string): string {
+  return text
+    .replace(/<skill\b[^>]*>[\s\S]*?<\/skill>/gi, " ")
+    .replace(/<skill\b[^>]*>[\s\S]*$/gi, " ")
+    .replace(/<\/?paseo-system\b[^>]*>/gi, " ")
+    .replace(
+      /^\s*(?:Task:\s*)?You are reviving a previous subagent conversation\.[\s\S]*?(?=Original task:|Current task:|New instructions:|Follow-up:|$)/i,
+      " ",
+    )
+    .replace(/^\s*The session was interrupted\.[\s\S]*?(?:\n\s*\n|$)/i, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
 export function decideRecall(i: RecallDecisionInput): RecallDecision {
   const skip = (reason: SkipReason): RecallDecision => ({
     recall: false,
@@ -74,14 +88,14 @@ export function decideRecall(i: RecallDecisionInput): RecallDecision {
   const yes = (reason: RecallReason): RecallDecision => ({
     recall: true,
     reason,
-    query: boundQuery(i.prompt.trim().replace(/\s+/g, " ")),
+    query: boundQuery(prompt),
   });
   if (!i.enabled) return skip("disabled");
   if (i.paused) return skip("paused");
   if (i.policy === "off") return skip("policy-off");
   if (i.breakerOpen) return skip("breaker-open");
   if (i.messageType === "custom") return skip("custom-run");
-  const prompt = i.prompt.trim().replace(/\s+/g, " ");
+  const prompt = cleanRecallPrompt(i.prompt);
   if (
     prompt.length < i.minPromptChars ||
     /^(y|yes|no|ok(ay)?|sure|thanks?( you)?|continue|go( on| ahead)?|proceed|do it|lgtm|done|next|retry|again)[.! ]*$/i.test(
@@ -94,7 +108,7 @@ export function decideRecall(i: RecallDecisionInput): RecallDecision {
   if (!i.lastRecallQuery) return yes("first-prompt");
   if (i.compactedSinceLastRecall) return yes("post-compaction");
   if (
-    /\b(remember|recall|last time|previous(ly)?|earlier|before|we (decided|agreed|chose)|why did (we|i)|convention|preference|usual(ly)?|history|again|as discussed)\b/i.test(
+    /\b(remember(?: that| when| our| the)?|recall|last time|we (decided|agreed|chose)|why did (we|i)|conventions?|preferences?|as discussed)\b/i.test(
       prompt,
     )
   )

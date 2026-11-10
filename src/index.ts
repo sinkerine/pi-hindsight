@@ -74,6 +74,8 @@ export default function hindsightMemory(pi: ExtensionAPI): void {
   function createRuntime(ctx: ExtensionContext, project: string) {
     const { config, warnings } = readConfig(ctx.cwd);
     const sessionId = ctx.sessionManager.getSessionId();
+    const canRetain =
+      process.env.PI_SUBAGENT_CHILD !== "1" || config.subagents === "full";
     const controller = new AbortController();
     const breaker = new CircuitBreaker();
     let closed = false;
@@ -176,6 +178,7 @@ export default function hindsightMemory(pi: ExtensionAPI): void {
         closed ||
         forgetting ||
         !config.enabled ||
+        !canRetain ||
         state.paused ||
         breaker.isOpen()
       )
@@ -183,7 +186,18 @@ export default function hindsightMemory(pi: ExtensionAPI): void {
       if (!manual && !config.retain.auto) return;
       if (!config.retain.ephemeral && !ctx.sessionManager.getSessionFile())
         return;
-      const rendered = renderMessages(ctx.sessionManager.getBranch(), {
+      const branch = ctx.sessionManager.getBranch();
+      if (
+        !manual &&
+        branch.filter(
+          (entry) =>
+            !forkBaseline.has(entry.id) &&
+            entry.type === "message" &&
+            entry.message.role === "user",
+        ).length < config.retain.minUserTurns
+      )
+        return;
+      const rendered = renderMessages(branch, {
         includeToolCalls: config.retain.includeToolCalls,
         excludeEntryIds: forkBaseline,
       });
@@ -327,6 +341,7 @@ export default function hindsightMemory(pi: ExtensionAPI): void {
     for (const warning of warnings) warn("config", warning);
     return {
       config,
+      canRetain,
       project,
       loadedDigest,
       get digest() {
@@ -504,7 +519,7 @@ export default function hindsightMemory(pi: ExtensionAPI): void {
 
   pi.registerCommand("hindsight", {
     description:
-      "Memory status, pause, resume, recall, digest, checkpoint, or forget",
+      "Memory status, pause, resume, recall, digest, checkpoint, retry-failed, or forget",
     handler: async (args, ctx) => {
       const r = runtime;
       if (!r) return;
@@ -519,10 +534,41 @@ export default function hindsightMemory(pi: ExtensionAPI): void {
           const { hits } = await r.recall(rest.join(" "), "manual");
           if (ctx.hasUI) ctx.ui.notify(formatHitsForTool(hits), "info");
         } else if (command === "digest") {
+          if (rest[0] === "refresh") {
+            if (!r.config.enabled || !r.config.digest.enabled || r.state.paused)
+              return;
+            await r.loadedDigest();
+            const spec = digestSpec(r.project, r.config.digest);
+            await r.client.updateMentalModel(spec, r.config.digest.timeoutMs);
+            await r.client.refreshMentalModel(
+              spec.id,
+              r.config.digest.timeoutMs,
+              undefined,
+              true,
+            );
+            if (ctx.hasUI)
+              ctx.ui.notify(
+                "Digest settings updated; full regeneration queued. Reload after it completes to use the new digest.",
+                "info",
+              );
+            return;
+          }
           const digest = await r.loadedDigest();
           if (ctx.hasUI)
             ctx.ui.notify(
               digest ? formatDigestBlock(digest.content) : r.describe(),
+              "info",
+            );
+          return;
+        } else if (command === "retry-failed" && rest.length === 1) {
+          if (!r.config.enabled || !r.canRetain || r.state.paused) return;
+          await r.client.retryOperation(
+            rest[0] ?? "",
+            r.config.retain.timeoutMs,
+          );
+          if (ctx.hasUI)
+            ctx.ui.notify(
+              "Operation queued for retry; extraction is not yet complete.",
               "info",
             );
           return;
@@ -543,12 +589,21 @@ export default function hindsightMemory(pi: ExtensionAPI): void {
         } else if (command !== "status" && command !== "") {
           if (ctx.hasUI)
             ctx.ui.notify(
-              "Usage: /hindsight status|pause|resume|recall <query>|digest|checkpoint|forget",
+              "Usage: /hindsight status|pause|resume|recall <query>|digest|checkpoint|retry-failed <operation-id>|forget",
               "info",
             );
           return;
         }
-        if (ctx.hasUI && runtime) ctx.ui.notify(runtime.describe(), "info");
+        let serverStatus = "";
+        if ((command === "status" || command === "") && r.config.enabled) {
+          try {
+            serverStatus = ` | server failed operations (bank-wide): ${await r.client.failedOperations(r.config.recall.timeoutMs)}`;
+          } catch {
+            serverStatus = " | server failed operations: unavailable";
+          }
+        }
+        if (ctx.hasUI && runtime)
+          ctx.ui.notify(runtime.describe() + serverStatus, "info");
       } catch {
         if (ctx.hasUI)
           ctx.ui.notify("Hindsight command unavailable.", "warning");
@@ -613,6 +668,7 @@ export default function hindsightMemory(pi: ExtensionAPI): void {
       if (
         !r?.config.tools ||
         !r.config.enabled ||
+        !r.canRetain ||
         r.state.paused ||
         r.breaker.isOpen()
       )

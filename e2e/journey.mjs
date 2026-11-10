@@ -34,10 +34,10 @@ export async function runJourney({ tempDir, evidenceDir, llm = process.env.E2E_L
   const version = await exec(piBin, ["--version"], { cwd, env, timeout: 10000 });
   assert.match(version.stdout.trim(), /^(?:pi\s+)?1\.4\.0$/, "E2E requires Pi 1.4.0");
   const common = ["--offline", "-p", "-ne", "-ns", "-np", "-nc", "--no-themes", "--no-tools", "-e", join(root, "src/index.ts"), "--model", "e2e/stub", "--session-dir", sessions];
-  async function pi(label, sessionArgs, prompt) {
+  async function pi(label, sessionArgs, prompt, child = false) {
     const started = performance.now();
     try {
-      const execution = exec(piBin, [...common, ...sessionArgs, prompt], { cwd, env, timeout: 30000, maxBuffer: 4 * 1024 * 1024 });
+      const execution = exec(piBin, [...common, ...sessionArgs, prompt], { cwd, env: { ...env, ...(child ? { PI_SUBAGENT_CHILD: "1" } : {}) }, timeout: 30000, maxBuffer: 4 * 1024 * 1024 });
       // Pi waits for piped stdin to end before processing the prompt argument.
       execution.child.stdin.end();
       const { stdout, stderr } = await execution;
@@ -116,6 +116,7 @@ export async function runJourney({ tempDir, evidenceDir, llm = process.env.E2E_L
   }, { timeoutMs: 30000 });
   assert.match(digestModel.id, /^pi-digest-e2e-sandbox-[a-f0-9]{8}$/);
   assert.deepEqual(digestModel.tags, [`project:${project}`]);
+  assert.equal(digestModel.max_tokens, 800);
   assert.equal(digestModel.trigger?.mode, "delta");
   assert.equal(digestModel.trigger?.refresh_cron, "0 3 * * *");
   assert.equal(digestModel.trigger?.full_refresh_cron, "0 3 * * 0");
@@ -139,6 +140,18 @@ export async function runJourney({ tempDir, evidenceDir, llm = process.env.E2E_L
     assert.equal(digestInjections((await session(d, "session-d-ok")).entries).length, 1, "Resume must not inject the digest again");
     digestResult = "injected";
   }
+
+  const childId = crypto.randomUUID();
+  const childReply = await pi("child-off", ["--session-id", childId], "How do we deploy this project?", true);
+  assert.equal(childReply.stdout.trim(), "NO_MEMORY");
+  assert.equal(recalls((await session(childId, "child-off")).entries).length, 0);
+  const childDocuments = await json(`${bankPath}/documents?limit=100`);
+  assert.ok(!childDocuments.items.some((item) => item.id.startsWith(`pi:${childId}:`)), "Default child must not retain its transcript");
+
+  const queryId = crypto.randomUUID();
+  await pi("clean-query", ["--session-id", queryId], `<skill name="noise">${"Remember the unrelated history. ".repeat(60)}</skill>\n<paseo-system source-agent-id="previous-run">How do we deploy this project?</paseo-system>`);
+  const queryRecalls = memoryRecalls((await session(queryId, "clean-query")).entries);
+  assert.equal(queryRecalls[0]?.details.query, "How do we deploy this project?");
 
   const c = crypto.randomUUID();
   await pi("session-c", ["--session-id", c], "remember the api key is sk-test-ABCDEFGHIJKLMNOPQRSTUV");
