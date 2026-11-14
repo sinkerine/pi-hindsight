@@ -77,13 +77,24 @@ describe("automatic forget and compaction", () => {
   });
 
   it("injects an existing digest once per branch with the first recall and again after compaction", async () => {
-    server.model(digestId, "Deploys use make ship. <b>Never</b> force-push.");
+    server.model(
+      digestId,
+      "Deploys use make ship. <b>Never</b> force-push.",
+      "2026-11-08T03:00:00Z",
+      true,
+    );
     const pi = await start();
     await pi.prompt("How do we deploy this project?");
     const [first] = injected(pi);
     expect(first?.content).toContain("<hindsight_project_digest>");
     expect(first?.content).toContain("&lt;b&gt;Never&lt;/b&gt;");
     expect(first?.content).toContain("<hindsight_memory>");
+    expect(first?.content).toContain("refreshed_at=2026-11-08T03:00:00.000Z");
+    expect(first?.content).toContain("newer_source_memories=true");
+    await pi.command("digest");
+    expect(pi.notices.at(-1)).toBe(
+      first?.content.split("\n\n<hindsight_memory>")[0],
+    );
     expect(first?.details).toMatchObject({
       reason: "first-prompt",
       digest: { id: digestId, refreshedAt: "2026-11-08T03:00:00Z" },
@@ -106,14 +117,15 @@ describe("automatic forget and compaction", () => {
 
   it("updates only the project digest and requests a full regeneration explicitly", async () => {
     server.model(digestId, "Old oversized digest");
+    configure({ digest: { maxTokens: 512, timeoutMs: 200 } });
     const pi = await start();
     await pi.command("digest refresh");
     const requests = server.modelRequests();
     expect(requests.find((r) => r.method === "PATCH")).toMatchObject({
       path: `/v1/default/banks/test/mental-models/${digestId}`,
       body: {
-        max_tokens: 800,
-        source_query: expect.stringContaining("compact checklist"),
+        max_tokens: 512,
+        source_query: expect.stringContaining("within 512 tokens"),
         trigger: { mode: "delta" },
       },
     });

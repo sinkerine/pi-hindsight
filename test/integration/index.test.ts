@@ -144,6 +144,49 @@ describe("hindsightMemory extension with real HTTP", () => {
     );
   });
 
+  it("carries provenance through automatic injection, tool recall, and manual preview", async () => {
+    server.hits([
+      {
+        id: "deployment",
+        text: "Deploy with make ship.",
+        type: "observation",
+        document_id: "pi:release-session:0",
+        mentioned_at: "2026-11-08T03:00:00Z",
+        context: "Release decision",
+        source_fact_ids: ["release-fact"],
+      },
+    ]);
+    const pi = await start();
+    await pi.prompt("How do we deploy this project?");
+    expect(
+      pi.branch.find((entry) => entry.type === "custom_message"),
+    ).toMatchObject({
+      content: expect.stringContaining("document=pi:release-session:0"),
+    });
+    // Existing injected memories do not prevent a targeted model lookup.
+    const result = await pi.tool("hindsight_recall", {
+      query: "Why did we choose make ship?",
+      max_tokens: 256,
+    });
+    expect(result.content).toEqual([
+      {
+        type: "text",
+        text: expect.stringContaining("source_facts=release-fact"),
+      },
+    ]);
+    expect(server.recalls().at(-1)?.body).toMatchObject({
+      query: "Why did we choose make ship?",
+      max_tokens: 256,
+    });
+    await pi.command("recall release decision");
+    expect(
+      pi.notices.some((notice) => notice.includes("context=Release decision")),
+    ).toBe(true);
+    expect(
+      pi.branch.filter((entry) => entry.type === "custom_message"),
+    ).toHaveLength(1);
+  });
+
   it("skips acknowledgements, short prompts, and custom-triggered runs", async () => {
     const pi = await start();
     for (const prompt of ["ok", "yes", "continue", "thanks", "small"])

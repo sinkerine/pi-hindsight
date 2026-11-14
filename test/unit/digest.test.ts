@@ -23,6 +23,15 @@ it("builds a project-scoped delta digest with server-side schedules", () => {
     },
   });
 });
+it.each([256, 800, 2048])(
+  "uses the configured %i-token budget in both the query and request",
+  (maxTokens) => {
+    const spec = digestSpec("demo", { ...DEFAULT_CONFIG.digest, maxTokens });
+    expect(spec.maxTokens).toBe(maxTokens);
+    expect(spec.sourceQuery).toContain(`within ${maxTokens} tokens`);
+    if (maxTokens !== 800) expect(spec.sourceQuery).not.toContain("800 tokens");
+  },
+);
 it("accepts only five-field cron expressions", () => {
   expect(isCron("*/15 3 * * 1-5")).toBe(true);
   expect(isCron("0 3 * *")).toBe(false);

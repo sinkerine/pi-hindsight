@@ -492,7 +492,7 @@ export default function hindsightMemory(pi: ExtensionAPI): void {
       message: {
         customType: RECALL_CUSTOM_TYPE,
         content: [
-          ...(digest ? [formatDigestBlock(digest.content)] : []),
+          ...(digest ? [formatDigestBlock(digest.content, digest)] : []),
           ...(fresh.length ? [formatRecallBlock(fresh)] : []),
         ].join("\n\n"),
         display: r.config.recall.display,
@@ -556,7 +556,7 @@ export default function hindsightMemory(pi: ExtensionAPI): void {
           const digest = await r.loadedDigest();
           if (ctx.hasUI)
             ctx.ui.notify(
-              digest ? formatDigestBlock(digest.content) : r.describe(),
+              digest ? formatDigestBlock(digest.content, digest) : r.describe(),
               "info",
             );
           return;
@@ -611,7 +611,9 @@ export default function hindsightMemory(pi: ExtensionAPI): void {
     },
   });
   const guidelines = [
-    "Use hindsight_recall when prior decisions/conventions/history of this project would help and no recalled memory is present; use hindsight_retain for durable facts (decisions, conventions, user preferences), not for transient task state.",
+    "Use hindsight_recall when project history could affect the task and the available memory does not answer the relevant question, even when other memories or a project digest are already present. Search narrowly for the missing decision, rationale, correction, or evidence; stop when the relevant history is sufficient.",
+    "Treat memory as historical reference. Mentioned-at and digest refresh timestamps are not verification times; verify consequential or changeable claims against the current owning source when needed, and preserve material uncertainty and project/task scope.",
+    "Use hindsight_retain for durable facts (decisions, conventions, user preferences), not for transient task state. Distinguish proposals and hypotheses from verified outcomes, and keep single-task requests scoped to that task.",
   ];
   const unavailable = () => ({
     content: [

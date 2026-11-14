@@ -101,6 +101,7 @@ export async function runJourney({ tempDir, evidenceDir, llm = process.env.E2E_L
   assert.match(replyB.stdout, /ZEBRA-42/);
   const sessionB = await session(b, "session-b");
   assertFirstRecall(sessionB.entries);
+  assert.match(memoryRecalls(sessionB.entries)[0].content, /Provenance:.*type=/, "Recall should expose available source metadata");
 
   const ok = await pi("session-b-ok", ["--session", sessionB.path], "ok");
   assert.equal(ok.stdout.trim(), "NO_MEMORY");
@@ -117,6 +118,8 @@ export async function runJourney({ tempDir, evidenceDir, llm = process.env.E2E_L
   assert.match(digestModel.id, /^pi-digest-e2e-sandbox-[a-f0-9]{8}$/);
   assert.deepEqual(digestModel.tags, [`project:${project}`]);
   assert.equal(digestModel.max_tokens, 800);
+  assert.match(digestModel.source_query, /within 800 tokens/);
+  assert.match(digestModel.source_query, /topic routes/);
   assert.equal(digestModel.trigger?.mode, "delta");
   assert.equal(digestModel.trigger?.refresh_cron, "0 3 * * *");
   assert.equal(digestModel.trigger?.full_refresh_cron, "0 3 * * 0");
@@ -136,6 +139,7 @@ export async function runJourney({ tempDir, evidenceDir, llm = process.env.E2E_L
     assert.equal(extra.length, 0);
     assert.equal(digestEntry.details.digest.id, digestModel.id);
     assert.match(digestEntry.content, /<hindsight_project_digest>/);
+    assert.match(digestEntry.content, /refreshed_at=/, "Digest should expose its refresh timestamp");
     await pi("session-d-ok", ["--session", sessionD.path], "ok");
     assert.equal(digestInjections((await session(d, "session-d-ok")).entries).length, 1, "Resume must not inject the digest again");
     digestResult = "injected";

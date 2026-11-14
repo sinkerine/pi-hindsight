@@ -2,8 +2,9 @@ import { createHash } from "node:crypto";
 import type { MentalModelSpec } from "./client.js";
 import type { DigestConfig } from "./config.js";
 
-export const DIGEST_SOURCE_QUERY =
-  "What durable decisions, conventions, user preferences, architecture constraints, and known pitfalls apply to this project? Write a compact checklist of only the most useful current facts within 800 tokens. Prefer stable rules and recurring pitfalls over package versions, commit hashes, historical incidents, and long examples. Exclude transient task progress, one-off command output, and anything superseded by later decisions.";
+function digestSourceQuery(maxTokens: number): string {
+  return `What durable decisions, conventions, user preferences, architecture constraints, and known pitfalls apply to this project? Write a compact checklist and topic guide within ${maxTokens} tokens. Prioritize the most useful supported conventions and decisions. Preserve their project/task scope; distinguish explicit user preferences from single-task requests, proposals, hypotheses, and verified outcomes. Later corrections supersede earlier claims. Include a few topic routes only when useful: what prior decision or debugging lesson to recall, when its detail matters, and specific search terms. Preserve exact safe source identifiers or paths only when supplied by evidence; never invent pointers. Prefer stable rules and recurring pitfalls over package versions, commit hashes, historical incidents, and long examples. Exclude transient task progress, one-off command output, unsupported generalizations, and superseded claims. Omit empty sections and do not fill the budget with low-value recap.`;
+}
 
 /** Mental model ids allow lowercase alphanumerics and hyphens only. */
 export function digestIdFor(project: string): string {
@@ -23,7 +24,7 @@ export function digestSpec(
   return {
     id: digestIdFor(project),
     name: `Pi project digest: ${project}`,
-    sourceQuery: DIGEST_SOURCE_QUERY,
+    sourceQuery: digestSourceQuery(config.maxTokens),
     tags: [`project:${project}`],
     maxTokens: config.maxTokens,
     trigger: {
